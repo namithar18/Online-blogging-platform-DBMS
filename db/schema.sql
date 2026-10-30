@@ -128,3 +128,159 @@ CREATE TABLE posts (
     CONSTRAINT posts_published_after_created
         CHECK (published_at IS NULL OR published_at >= created_at)
 );
+
+
+-- ---------------------------------------------------------------------
+-- 5. post_tags — M:N TAGGED_WITH between posts and tags.
+-- ---------------------------------------------------------------------
+CREATE TABLE post_tags (
+    -- CASCADE: a tag link means nothing once its post or tag is gone.
+    post_id       bigint       NOT NULL
+                  REFERENCES posts (post_id) ON DELETE CASCADE,
+    tag_id        bigint       NOT NULL
+                  REFERENCES tags (tag_id) ON DELETE CASCADE,
+    -- Composite PK: the same tag cannot be put on a post twice.
+    PRIMARY KEY (post_id, tag_id)
+);
+
+
+-- ---------------------------------------------------------------------
+-- 6. community_members — M:N MEMBER_OF with attribute joined_at.
+-- joined_at depends on the whole (user, community) pair (2NF).
+-- ---------------------------------------------------------------------
+CREATE TABLE community_members (
+    user_id       bigint       NOT NULL
+                  REFERENCES users (user_id) ON DELETE CASCADE,
+    community_id  bigint       NOT NULL
+                  REFERENCES communities (community_id) ON DELETE CASCADE,
+    joined_at     timestamptz  NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, community_id)
+);
+
+
+-- ---------------------------------------------------------------------
+-- 7. comments — strong entity COMMENT; 1:N WRITES and HAS_COMMENT,
+-- recursive 1:N REPLIES_TO (parent_comment_id).
+-- ---------------------------------------------------------------------
+CREATE TABLE comments (
+    comment_id    bigint       GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    -- CASCADE: comments have no meaning without their post.
+    post_id       bigint       NOT NULL
+                  REFERENCES posts (post_id) ON DELETE CASCADE,
+    -- RESTRICT: same "do not lose content" rule as posts.author_id.
+    author_id     bigint       NOT NULL
+                  REFERENCES users (user_id) ON DELETE RESTRICT,
+    parent_comment_id bigint,                 -- NULL = top-level comment
+    content       text         NOT NULL
+                  CHECK (length(trim(content)) > 0),
+    -- C3: soft delete. Moderation sets 'removed' so replies keep their
+    -- parent and the thread stays intact (ER doc D9).
+    status        varchar(7)   NOT NULL DEFAULT 'visible'
+                  CHECK (status IN ('visible', 'removed')),
+    created_at    timestamptz  NOT NULL DEFAULT now(),
+    updated_at    timestamptz  NOT NULL DEFAULT now(),
+
+    -- Required by the composite FK below: a foreign key may only point
+    -- at a PRIMARY KEY or UNIQUE set of columns.
+    CONSTRAINT comments_id_post_unique
+        UNIQUE (comment_id, post_id),
+    -- C2: a reply must be on the same post as its parent, because both
+    -- rows share this one post_id column.
+    -- Default MATCH SIMPLE skips the check when parent_comment_id is NULL,
+    -- which is what lets top-level comments in. MATCH FULL would reject them.
+    -- Default NO ACTION is checked at the END of the statement: deleting a
+    -- post can still cascade to all its comments, but directly deleting a
+    -- comment that has replies fails (use soft delete instead). CASCADE here
+    -- would destroy other users' replies; RESTRICT is checked immediately.
+    CONSTRAINT comments_reply_same_post
+        FOREIGN KEY (parent_comment_id, post_id)
+        REFERENCES comments (comment_id, post_id),
+    CONSTRAINT comments_not_own_parent
+        CHECK (parent_comment_id <> comment_id),
+    -- C9
+    CONSTRAINT comments_updated_after_created
+        CHECK (updated_at >= created_at)
+);
+
+
+-- ---------------------------------------------------------------------
+-- 8. reactions — M:N REACTS_TO with attributes.
+-- ---------------------------------------------------------------------
+CREATE TABLE reactions (
+    user_id       bigint       NOT NULL
+                  REFERENCES users (user_id) ON DELETE CASCADE,
+    post_id       bigint       NOT NULL
+                  REFERENCES posts (post_id) ON DELETE CASCADE,
+    -- C3: reaction domain.
+    reaction_type varchar(10)  NOT NULL DEFAULT 'like'
+                  CHECK (reaction_type IN ('like', 'love', 'insightful')),
+    reacted_at    timestamptz  NOT NULL DEFAULT now(),
+    -- A4: one reaction per user per post; changing it is an UPDATE.
+    PRIMARY KEY (user_id, post_id)
+);
+
+
+-- ---------------------------------------------------------------------
+-- 9. bookmarks — M:N BOOKMARKS with attribute bookmarked_at.
+-- ---------------------------------------------------------------------
+CREATE TABLE bookmarks (
+    user_id       bigint       NOT NULL
+                  REFERENCES users (user_id) ON DELETE CASCADE,
+    post_id       bigint       NOT NULL
+                  REFERENCES posts (post_id) ON DELETE CASCADE,
+    bookmarked_at timestamptz  NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, post_id)
+);
+
+
+-- ---------------------------------------------------------------------
+-- 10. follows — recursive M:N FOLLOWS. Two FKs to the same table,
+-- named by role (follower / followee).
+-- ---------------------------------------------------------------------
+CREATE TABLE follows (
+    follower_id   bigint       NOT NULL
+                  REFERENCES users (user_id) ON DELETE CASCADE,
+    followee_id   bigint       NOT NULL
+                  REFERENCES users (user_id) ON DELETE CASCADE,
+    followed_at   timestamptz  NOT NULL DEFAULT now(),
+    PRIMARY KEY (follower_id, followee_id),
+    -- C1: nobody can follow themselves.
+    CONSTRAINT follows_not_self
+        CHECK (follower_id <> followee_id)
+);
+
+
+-- ---------------------------------------------------------------------
+-- 11. post_embeddings — weak entity POST_EMBEDDING.
+-- PK = owner's key + partial key (model_name).
+-- ---------------------------------------------------------------------
+CREATE TABLE post_embeddings (
+    -- CASCADE: existence dependency — no post, no embedding.
+    post_id       bigint       NOT NULL
+                  REFERENCES posts (post_id) ON DELETE CASCADE,
+    model_name    varchar(100) NOT NULL,
+    -- C6: vector(384) rejects any other length. 384 is the output size of
+    -- the chosen model, all-MiniLM-L6-v2 (free, runs locally).
+    embedding     vector(384)  NOT NULL,
+    created_at    timestamptz  NOT NULL DEFAULT now(),
+    -- C6: at most one embedding per (post, model).
+    PRIMARY KEY (post_id, model_name)
+);
+
+
+-- ---------------------------------------------------------------------
+-- 12. reading_activity — entity, not M:N: repeated views of one post by
+-- one user are separate facts, so each needs its own key (ER doc §6 pt 2).
+-- ---------------------------------------------------------------------
+CREATE TABLE reading_activity (
+    activity_id   bigint       GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    -- CASCADE on user: privacy — a deleted user's history goes with them.
+    user_id       bigint       NOT NULL
+                  REFERENCES users (user_id) ON DELETE CASCADE,
+    post_id       bigint       NOT NULL
+                  REFERENCES posts (post_id) ON DELETE CASCADE,
+    -- C3: activity domain. Only views are recorded for now.
+    activity_type varchar(10)  NOT NULL DEFAULT 'view'
+                  CHECK (activity_type IN ('view')),
+    occurred_at   timestamptz  NOT NULL DEFAULT now()
+);
