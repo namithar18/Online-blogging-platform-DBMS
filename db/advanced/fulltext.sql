@@ -1,44 +1,30 @@
+\set ON_ERROR_STOP on
 --==========================================================================
 -- File: fulltext.sql
--- Purpose: Add full-text search support for the `posts` table.
+-- Purpose: Demonstrate full‑text search on the `published_posts` view.
 --==========================================================================
+-- NOTE: This script assumes that the schema (db/schema.sql), seed data
+-- (db/seed.sql) and any view definitions (e.g. `published_posts`) have already
+-- been applied.
 --
--- 1. GIN index on the generated `search_vector` column
+-- 1. Drop any previous index and recreate it using the project's naming
+--    convention.  The index is created on the generated `search_vector`
+--    column of the `posts` table.
 -- ---------------------------------------------------------------------------
--- A GIN (Generalized Inverted Index) is the standard index type for searching
--- tsvector columns. It stores a mapping from each lexeme (word) to the rows
--- containing that lexeme, enabling fast `@@` (match) queries.
---
--- The column `posts.search_vector` is already defined as a stored generated
--- column (see db/schema.sql). Because it is generated, its value is always up-to-date - we only need an index to make look-ups efficient.
---
--- The index creation is idempotent: it will be created only if it does not
--- already exist.  `CONCURRENTLY` avoids locking the `posts` table for writes
--- during index build, which is safe for production environments.
---
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_posts_search_vector
-    ON posts USING gin (search_vector);
+\echo 'Creating permanent GIN index on posts.search_vector';
+DROP INDEX IF EXISTS idx_posts_search_vector;
+DROP INDEX IF EXISTS posts_search_vector_idx;
+CREATE INDEX posts_search_vector_idx ON posts USING gin (search_vector);
 
 --==========================================================================
--- 2. Ranked full-text search query
+-- 2. Demonstration search term – changed to "index" to match sample data.
+\echo 'Running published-post full-text search';
 -- ---------------------------------------------------------------------------
--- The following example demonstrates a searchable query that:
---   * accepts a literal search phrase
---   * uses `websearch_to_tsquery('english', ...)` - parses the phrase similar
---     to a web search engine (handles quotes, AND/OR, etc.)
---   * matches the generated `search_vector` with the `@@` operator
---   * ranks results with `ts_rank`
---   * returns only published posts
---   * orders by relevance (highest first)
---
--- To run the example, paste the block into psql and execute it.
--- Replace the search phrase as needed.
---
--- NOTE: This query is written to be self-contained - it does not rely on any
--- application-specific parameter placeholders.
+-- The view `published_posts` encapsulates the "status = 'published'" filter.
+-- The query below shows how to rank results and order deterministically.
 --
 WITH q AS (
-    SELECT websearch_to_tsquery('english', 'machine learning') AS query
+    SELECT websearch_to_tsquery('english', 'index') AS query
 )
 SELECT
     p.post_id,
@@ -46,49 +32,96 @@ SELECT
     p.content,
     p.published_at,
     ts_rank(p.search_vector, q.query) AS relevance
-FROM posts p, q
-WHERE p.status = 'published'
-  AND p.search_vector @@ q.query
-ORDER BY relevance DESC;
+FROM published_posts p, q
+WHERE p.search_vector @@ q.query
+ORDER BY relevance DESC, p.post_id ASC;
 
 --==========================================================================
--- 3. EXPLAIN (ANALYZE, BUFFERS) verification
+-- 3. Show that a draft post (post_id = 10) contains the term "index" in its
+--    underlying `posts` row but is filtered out by the `published_posts` view.
 -- ---------------------------------------------------------------------------
--- The block below runs the same query under EXPLAIN to show the execution
--- plan and resource usage.  Look for `Bitmap Index Scan` (or `Index Scan`) on
--- `idx_posts_search_vector` - that indicates the GIN index is being used.
--- If the planner decides a sequential scan is cheaper (e.g., very small
--- tables), it will show `Seq Scan`.  PostgreSQL may choose a sequential scan
--- when the estimated row count is low; this does not mean the index is wrong.
+\echo 'Demonstrating that draft post 10 is excluded from published_posts';
+WITH q AS (
+    SELECT websearch_to_tsquery('english', 'index') AS query
+)
+SELECT
+    p.post_id,
+    p.title,
+    p.content,
+    p.status,
+    ts_rank(p.search_vector, q.query) AS relevance
+FROM posts p, q
+WHERE p.post_id = 10
+  AND p.search_vector @@ q.query;
+-- The draft post should NOT appear in the published_posts view, so this query returns zero rows.
+WITH q AS (
+    SELECT websearch_to_tsquery('english', 'index') AS query
+)
+SELECT
+    p.post_id,
+    p.title
+FROM published_posts p, q
+WHERE p.post_id = 10
+  AND p.search_vector @@ q.query;
+
+--==========================================================================
+-- 4. EXPLAIN (ANALYZE, BUFFERS) on a sizable temporary dataset.
+-- ---------------------------------------------------------------------------
+-- Insert ~100,000 test posts inside a transaction that is rolled back, then
+-- run the same query with EXPLAIN.  This demonstrates the planner's choice
+-- of the GIN index without leaving any rows behind.
 --
--- To force index usage for diagnostic purposes without changing permanent
--- settings you can temporarily raise `enable_seqscan` to `off` for the
--- session, e.g.:
---   SET enable_seqscan = off;
--- Then re-run the EXPLAIN.  Remember to reset it afterwards.
---
+--==========================================================================
+-- 4. Comparing EXPLAIN plans before and after the GIN index
+-- ---------------------------------------------------------------------------
+\echo 'Comparing EXPLAIN plans before and after the GIN index';
+BEGIN;
+-- Generate ~100,000 test posts. About 1 % contain the word "index".
+INSERT INTO posts (author_id, community_id, title, content, status, published_at)
+SELECT
+    1,                                   -- author_id (existing user)
+    1,                                   -- community_id (existing community)
+    'Test post ' || gs,                  -- title
+    CASE
+        WHEN gs % 100 = 0 THEN
+            'This is a test post about index and other topics. ' || gs
+        ELSE
+            'This is a generic test post without the keyword. ' || gs
+    END,
+    'published',
+    CURRENT_TIMESTAMP
+FROM generate_series(1, 100000) AS gs;
+ANALYZE posts;
+-- EXPLAIN without the GIN index (index dropped temporarily)
+DROP INDEX IF EXISTS posts_search_vector_idx;
 EXPLAIN (ANALYZE, BUFFERS)
 WITH q AS (
-    SELECT websearch_to_tsquery('english', 'machine learning') AS query
+    SELECT websearch_to_tsquery('english', 'index') AS query
 )
 SELECT
     p.post_id,
-    p.title,
-    p.content,
-    p.published_at,
     ts_rank(p.search_vector, q.query) AS relevance
-FROM posts p, q
-WHERE p.status = 'published'
-  AND p.search_vector @@ q.query
-ORDER BY relevance DESC;
+FROM published_posts p, q
+WHERE p.search_vector @@ q.query
+ORDER BY relevance DESC, p.post_id ASC;
+-- Re‑create the GIN index and analyze again
+CREATE INDEX posts_search_vector_idx ON posts USING gin (search_vector);
+ANALYZE posts;
+-- EXPLAIN with the GIN index present
+EXPLAIN (ANALYZE, BUFFERS)
+WITH q AS (
+    SELECT websearch_to_tsquery('english', 'index') AS query
+)
+SELECT
+    p.post_id,
+    ts_rank(p.search_vector, q.query) AS relevance
+FROM published_posts p, q
+WHERE p.search_vector @@ q.query
+ORDER BY relevance DESC, p.post_id ASC;
+\echo 'Rolling back the temporary test data';
+ROLLBACK;
+
 
 --==========================================================================
--- 4. How to run this script
--- ---------------------------------------------------------------------------
---   1. Connect to the project's PostgreSQL database (e.g. via psql or any GUI).
---   2. Execute the file:
---        \i db/advanced/fulltext.sql
---   3. The index will be created (if missing) and the example queries can be
---      copied into the console to test.
---   4. Use the EXPLAIN block to verify that the index is being used.
+-- End of script.
 --==========================================================================
