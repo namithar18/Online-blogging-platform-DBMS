@@ -1,5 +1,6 @@
 import type { PoolClient } from "pg";
 import { type CurrentUser, getCurrentUser, requireUser } from "@/lib/auth";
+import { embed, postText, saveEmbedding } from "@/lib/embeddings";
 import { HttpError, errorResponse, readJson } from "@/lib/http";
 import { canView, getPostDetail, parseId, parsePostInput, postWriteError, saveTags } from "@/lib/posts";
 import { withTransaction } from "@/lib/transaction";
@@ -67,7 +68,7 @@ export async function PATCH(request: Request, context: Context): Promise<Respons
         // COALESCE($n, column): NULL means "not sent", keep the old value.
         // published_at is set only the FIRST time a post is published (C4);
         // unpublishing or re-publishing keeps the original date.
-        await client.query(
+        const { rows } = await client.query<{ title: string; content: string }>(
           `UPDATE posts
            SET community_id = COALESCE($2, community_id),
                title        = COALESCE($3, title),
@@ -75,12 +76,23 @@ export async function PATCH(request: Request, context: Context): Promise<Respons
                status       = COALESCE($5, status),
                published_at = CASE WHEN $6 THEN COALESCE(published_at, now())
                                    ELSE published_at END
-           WHERE post_id = $1`,
+           WHERE post_id = $1
+           RETURNING title, content`,
           [postId, input.communityId ?? null, input.title ?? null, input.content ?? null,
            input.status ?? null, input.status === "published"],
         );
         if (input.tags !== undefined) {
           await saveTags(client, postId, input.tags);
+        }
+
+        // Re-embed only when the text changed. It runs inside the
+        // transaction, from the row just written, so the stored vector
+        // always matches the stored text. Trade-off: the row lock is held
+        // a few tens of milliseconds longer. A model failure (503) rolls
+        // back the whole edit.
+        if (input.title !== undefined || input.content !== undefined) {
+          const vector = await embed(postText(rows[0].title, rows[0].content));
+          await saveEmbedding(client, postId, vector);
         }
       });
     } catch (err) {

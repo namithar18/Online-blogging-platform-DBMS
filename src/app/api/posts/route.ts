@@ -1,5 +1,6 @@
 import { requireUser } from "@/lib/auth";
 import { getDbPool } from "@/lib/db";
+import { embed, postText, saveEmbedding } from "@/lib/embeddings";
 import { HttpError, errorResponse, readJson } from "@/lib/http";
 import { getPostDetail, parseId, parsePostInput, postWriteError, saveTags } from "@/lib/posts";
 import { withTransaction } from "@/lib/transaction";
@@ -91,13 +92,19 @@ export async function GET(request: Request): Promise<Response> {
 
 /**
  * POST /api/posts  { communityId, title, content, status?, tags? } -> 201 { post }
- * The post row and its tags are written in ONE transaction: if any tag
- * fails, the post is rolled back too (see db/advanced/transactions.sql).
+ * The post row, its tags and its embedding are written in ONE
+ * transaction: if any step fails, the post is rolled back too (see
+ * db/advanced/transactions.sql).
  */
 export async function POST(request: Request): Promise<Response> {
   try {
     const user = await requireUser();
     const input = parsePostInput(await readJson(request), false);
+
+    // Computed BEFORE the transaction starts: running the model takes tens
+    // of milliseconds, and no transaction should stay open meanwhile. If
+    // the model is unavailable this throws 503 and nothing is saved.
+    const vector = await embed(postText(input.title as string, input.content as string));
 
     let postId: string;
     try {
@@ -114,8 +121,7 @@ export async function POST(request: Request): Promise<Response> {
         );
         const newId = rows[0].postId;
         await saveTags(client, newId, input.tags ?? []);
-        // semantic-search-app adds the post_embeddings INSERT here, inside
-        // this same transaction.
+        await saveEmbedding(client, newId, vector);
         return newId;
       });
     } catch (err) {
