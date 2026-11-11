@@ -1,0 +1,19 @@
+services:
+  blogdb_nextjs:
+    image: pgvector/pgvector:pg16
+    container_name: blogdb_nextjs
+    environment:
+      POSTGRES_PASSWORD: postgres # development-only password
+      POSTGRES_DB: blog
+    ports:
+      - "5433:5432" # host port 5433 maps to container port 5432
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "blog"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
