@@ -1,0 +1,13 @@
+{
+  "name": "embed-seed",
+  "private": true,
+  "description": "One-off generator for db/seed_embeddings.sql (all-MiniLM-L6-v2, 384 dimensions)",
+  "type": "module",
+  "scripts": {
+    "generate": "node generate.mjs"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.3.2",
+    "pg": "^8.23.1"
+  }
+}
