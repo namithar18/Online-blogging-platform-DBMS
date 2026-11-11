@@ -17,17 +17,18 @@ TRUNCATE users, communities, tags, posts, post_tags, community_members,
          reading_activity
 RESTART IDENTITY;
 
--- C8: placeholders in bcrypt format, not hashes of real passwords.
--- These accounts cannot log in; component 7 creates real hashes.
+-- C8: real bcrypt hashes (cost 10, each with its own random salt) of the
+-- DEVELOPMENT-ONLY password  Passw0rd!  so every seed account can log in.
+-- Same password, different hashes: the salt is part of each hash.
 INSERT INTO users (name, email, password_hash, bio, role, created_at) VALUES
-    ('Ravi Kumar',    'ravi@example.com',    '$2b$10$seedplaceholderhash000001', 'Platform admin.',          'ADMIN', '2026-01-05 09:00+05:30'),  -- 1
-    ('Meena Iyer',    'meena@example.com',   '$2b$10$seedplaceholderhash000002', 'Community moderator.',     'ADMIN', '2026-01-06 09:00+05:30'),  -- 2
-    ('Asha Rao',      'asha@example.com',    '$2b$10$seedplaceholderhash000003', 'Writes about databases.',  'USER',  '2026-01-10 10:00+05:30'),  -- 3
-    ('Karthik Nair',  'karthik@example.com', '$2b$10$seedplaceholderhash000004', 'Backend developer.',       'USER',  '2026-01-12 11:00+05:30'),  -- 4
-    ('Divya Shetty',  'divya@example.com',   '$2b$10$seedplaceholderhash000005', 'Frontend and ML curious.', 'USER',  '2026-01-15 12:00+05:30'),  -- 5
-    ('Arjun Menon',   'arjun@example.com',   '$2b$10$seedplaceholderhash000006', NULL,                       'USER',  '2026-01-18 13:00+05:30'),  -- 6
-    ('Sneha Pai',     'sneha@example.com',   '$2b$10$seedplaceholderhash000007', 'Mostly here to read.',     'USER',  '2026-01-20 14:00+05:30'),  -- 7 (reader, no posts)
-    ('Rahul Bhat',    'rahul@example.com',   '$2b$10$seedplaceholderhash000008', NULL,                       'USER',  '2026-02-01 15:00+05:30');  -- 8 (reader, no posts)
+    ('Ravi Kumar',    'ravi@example.com',    '$2b$10$LkIrg2qwud23Kedljj1areE9BU8miErPsjNH.JRPKqoErhUbXl93e', 'Platform admin.',          'ADMIN', '2026-01-05 09:00+05:30'),  -- 1
+    ('Meena Iyer',    'meena@example.com',   '$2b$10$CYqmnt1yorRWnoTu9PfSMOQn4P.BTMQddCdeFysgbGJx66VHiE7uS', 'Community moderator.',     'ADMIN', '2026-01-06 09:00+05:30'),  -- 2
+    ('Asha Rao',      'asha@example.com',    '$2b$10$sxZG7GLsWxno4/lJUKdd1ujvn.qKzcKEl4UCcvDDtglyixkg3/kQ.', 'Writes about databases.',  'USER',  '2026-01-10 10:00+05:30'),  -- 3
+    ('Karthik Nair',  'karthik@example.com', '$2b$10$OeEmYOHiziGmenM0XIvll.e3JW7BYvb68YeOERV8dVsZmQ7Vj95ja', 'Backend developer.',       'USER',  '2026-01-12 11:00+05:30'),  -- 4
+    ('Divya Shetty',  'divya@example.com',   '$2b$10$IizB7xFy/sdo8NjUSEQ.me9TNBbTYCca8hnnhIWO0TEhD8TXgDUOe', 'Frontend and ML curious.', 'USER',  '2026-01-15 12:00+05:30'),  -- 5
+    ('Arjun Menon',   'arjun@example.com',   '$2b$10$bd16/eQwCk7t2kjDGvBzK.XE9J7TKyGC0bWAQ0d9EIaYflNW/StWm', NULL,                       'USER',  '2026-01-18 13:00+05:30'),  -- 6
+    ('Sneha Pai',     'sneha@example.com',   '$2b$10$KDL2Vp9xj/gGh/voPWYorubxgoz/C8V0Q46jY8fo/XMXpFHGNq3wa', 'Mostly here to read.',     'USER',  '2026-01-20 14:00+05:30'),  -- 7 (reader, no posts)
+    ('Rahul Bhat',    'rahul@example.com',   '$2b$10$jXjJGH4RRcZX9B7VCyEoE.Wqi09tuxjaUvQI5IRiC85vKguEDtsHK', NULL,                       'USER',  '2026-02-01 15:00+05:30');  -- 8 (reader, no posts)
 
 -- Only admins create communities (C5; the trigger arrives in component 4).
 INSERT INTO communities (name, description, created_by, created_at) VALUES
