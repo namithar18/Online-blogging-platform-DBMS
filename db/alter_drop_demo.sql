@@ -16,14 +16,17 @@
 -- =============================================================
 -- Part A: Demo table `demo_post_notes`
 -- =============================================================
+-- Drop both names: if an earlier run stopped after the RENAME below,
+-- the table is left behind as demo_post_notes_tmp.
 DROP TABLE IF EXISTS demo_post_notes;
+DROP TABLE IF EXISTS demo_post_notes_tmp;
 CREATE TABLE demo_post_notes (
     note_id      BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     post_id      BIGINT NOT NULL REFERENCES posts(post_id) ON DELETE CASCADE,
     note_text    TEXT NOT NULL,
     is_important BOOLEAN NOT NULL,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    -- Ensure note_text is not empty and at most 500 chars (checked later)
+    -- note_text may be at most 500 characters
     CONSTRAINT demo_note_chk CHECK (char_length(note_text) <= 500)
 );
 
@@ -47,9 +50,26 @@ SELECT 'Set default on reviewer' AS notice;
 ALTER TABLE demo_post_notes ALTER COLUMN reviewer DROP DEFAULT;
 SELECT 'Dropped default on reviewer' AS notice;
 
--- Set NOT NULL on reviewer
+-- ALTER checks the rows that already exist. Insert one row with no
+-- reviewer, so SET NOT NULL must fail (23502 not_null_violation).
+-- Post 1 comes from seed.sql.
+INSERT INTO demo_post_notes (post_id, note_text, is_important)
+VALUES (1, 'Check the examples in this post', true);
+
+-- The DO block catches the expected error so the script can continue
+-- (ON_ERROR_STOP would otherwise end it here).
+DO $$
+BEGIN
+    ALTER TABLE demo_post_notes ALTER COLUMN reviewer SET NOT NULL;
+    RAISE EXCEPTION 'SET NOT NULL should have failed';
+EXCEPTION WHEN not_null_violation THEN
+    RAISE NOTICE 'Expected error: %', SQLERRM;
+END $$;
+
+-- Fix the existing data first, then the same ALTER succeeds.
+UPDATE demo_post_notes SET reviewer = 'asha' WHERE reviewer IS NULL;
 ALTER TABLE demo_post_notes ALTER COLUMN reviewer SET NOT NULL;
-SELECT 'Set NOT NULL on reviewer' AS notice;
+SELECT 'Set NOT NULL on reviewer (after filling in the NULLs)' AS notice;
 
 -- Drop NOT NULL on reviewer
 ALTER TABLE demo_post_notes ALTER COLUMN reviewer DROP NOT NULL;
@@ -93,35 +113,39 @@ SELECT 'Dropped demo_post_notes_tmp' AS notice;
 -- =============================================================
 -- Part B: Safe ALTER on a real table (users) inside a transaction.
 -- =============================================================
+-- In PostgreSQL, DDL is transactional: ROLLBACK undoes an ALTER TABLE
+-- just like it undoes an INSERT. (In MySQL/Oracle, DDL commits implicitly.)
+-- ALTER TABLE takes an ACCESS EXCLUSIVE lock on users until ROLLBACK,
+-- so keep the transaction short.
 BEGIN;
--- Add a temporary column
 ALTER TABLE users ADD COLUMN tmp_demo VARCHAR(20);
 SELECT 'Added temporary column tmp_demo to users' AS notice;
--- Verify column exists
-SELECT column_name, data_type FROM information_schema.columns
-WHERE table_name = 'users' AND column_name = 'tmp_demo';
--- Remove the column again
-ALTER TABLE users DROP COLUMN tmp_demo;
-SELECT 'Dropped temporary column tmp_demo from users' AS notice;
--- Verify removal
-SELECT column_name FROM information_schema.columns
+-- Inside the transaction the column exists (expect 1).
+SELECT count(*) AS tmp_demo_columns_before_rollback FROM information_schema.columns
 WHERE table_name = 'users' AND column_name = 'tmp_demo';
 ROLLBACK;
--- Verify after rollback
+-- After ROLLBACK the column is gone without any DROP (expect 0).
 SELECT count(*) AS tmp_demo_columns_after_rollback FROM information_schema.columns
-WHERE table_name='users' AND column_name='tmp_demo';
-SELECT count(*) AS tmp_demo_columns_after_rollback FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'tmp_demo';
+WHERE table_name = 'users' AND column_name = 'tmp_demo';
 
 -- =============================================================
 -- Part C: Demonstrate FK-dependency error when dropping a referenced table.
 -- =============================================================
+-- Other tables (post_tags, comments, reactions, ...) and the views have
+-- foreign keys / dependencies on posts, so a plain DROP (RESTRICT is the
+-- default) is refused with 2BP01 dependent_objects_still_exist.
+-- DROP ... CASCADE would remove those FKs and views too, which is why we
+-- never use it on real tables.
+-- The BEGIN ... ROLLBACK is a safety net: even if the DROP somehow
+-- succeeded, nothing would be lost.
+BEGIN;
 DO $$
 BEGIN
-    BEGIN
-        DROP TABLE posts;
-    EXCEPTION WHEN dependent_objects_still_exist THEN
-        RAISE NOTICE 'Expected error: %', SQLERRM;
-    END;
+    DROP TABLE posts;
+    RAISE EXCEPTION 'DROP TABLE posts should have failed';
+EXCEPTION WHEN dependent_objects_still_exist THEN
+    RAISE NOTICE 'Expected error: %', SQLERRM;
 END $$;
+ROLLBACK;
 
 -- End of demo script

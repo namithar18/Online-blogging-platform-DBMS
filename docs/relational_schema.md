@@ -4,15 +4,18 @@
 
 ## Table definitions (standard notation)
 
-**bookmarks**(_user_id_ -> users.user_id, _post_id_ -> posts.post_id, bookmarked_at)  
-**comments**(**comment_id**, _post_id_ -> posts.post_id, _author_id_ -> users.user_id, _parent_comment_id_ -> comments.comment_id, content, status, created_at, updated_at)  
+Notation: **bold** = part of the primary key, _italic_ = foreign key (`-> table.column`).
+A column can be both: in junction tables the composite primary key is made of foreign keys.
+
+**bookmarks**(**_user_id_** -> users.user_id, **_post_id_** -> posts.post_id, bookmarked_at)  
+**comments**(**comment_id**, _post_id_ -> posts.post_id, _author_id_ -> users.user_id, _(parent_comment_id, post_id)_ -> comments(comment_id, post_id), content, status, created_at, updated_at)  
 **communities**(**community_id**, name, description, _created_by_ -> users.user_id, created_at)  
-**community_members**(_user_id_ -> users.user_id, _community_id_ -> communities.community_id, joined_at)  
-**follows**(_follower_id_ -> users.user_id, _followee_id_ -> users.user_id, followed_at)  
-**post_embeddings**(_post_id_ -> posts.post_id, **model_name**, embedding, created_at)  
-**post_tags**(_post_id_ -> posts.post_id, _tag_id_ -> tags.tag_id)  
+**community_members**(**_user_id_** -> users.user_id, **_community_id_** -> communities.community_id, joined_at)  
+**follows**(**_follower_id_** -> users.user_id, **_followee_id_** -> users.user_id, followed_at)  
+**post_embeddings**(**_post_id_** -> posts.post_id, **model_name**, embedding, created_at)  
+**post_tags**(**_post_id_** -> posts.post_id, **_tag_id_** -> tags.tag_id)  
 **posts**(**post_id**, _author_id_ -> users.user_id, _community_id_ -> communities.community_id, title, content, status, created_at, updated_at, published_at, search_vector)  
-**reactions**(_user_id_ -> users.user_id, _post_id_ -> posts.post_id, reaction_type, reacted_at)  
+**reactions**(**_user_id_** -> users.user_id, **_post_id_** -> posts.post_id, reaction_type, reacted_at)  
 **reading_activity**(**activity_id**, _user_id_ -> users.user_id, _post_id_ -> posts.post_id, activity_type, occurred_at)  
 **tags**(**tag_id**, tag_name)  
 **users**(**user_id**, name, email, password_hash, bio, role, created_at)
@@ -45,12 +48,15 @@
 
 ## ER‑to‑relational mapping notes
 * **M:N relationships** (`posts↔tags`, `users↔communities`) are materialized as junction tables (`post_tags`, `community_members`) with composite primary keys.
-* **Self‑referencing relationships** (`follows`, `comments.parent_comment_id`) use two foreign‑key columns that both point back to the same primary table.
+* **Self‑referencing relationships** point back to the same table:
+  * `follows` has two foreign keys (`follower_id`, `followee_id`), both to `users`.
+  * `comments` has one composite foreign key `(parent_comment_id, post_id) → comments(comment_id, post_id)`, which also forces a reply onto the same post as its parent (C2).
 * **Generated column** `posts.search_vector` is a stored `tsvector` derived from `title || ' ' || content`.
 * **Vector column** `post_embeddings.embedding` is of type `vector(384)` (fixed dimension for the embedding model).
-* **Triggers** (in `db/advanced/triggers.sql`) enforce business rules that cannot be expressed with plain CHECK constraints:
-  * `communities_creator_must_be_admin` ensures only admin users can create a community (C5).
-  * `set_updated_at` guarantees `updated_at` is never before `created_at` on posts (C9).
+* **C9** (`updated_at >= created_at`) compares two columns of the same row, so it is a plain CHECK constraint (`posts_updated_after_created`, `comments_updated_after_created`), not a trigger.
+* **Triggers** (in `db/advanced/triggers.sql`):
+  * `communities_creator_must_be_admin` ensures only admin users can create a community (C5). A CHECK cannot do this because it needs to read another table (`users.role`).
+  * `posts_set_updated_at` and `comments_set_updated_at` (function `set_updated_at()`) fill in `updated_at = now()` automatically on every UPDATE. This is a convenience; it does not enforce C9.
 
 ---
 
@@ -68,12 +74,12 @@ erDiagram
     USERS ||--o{ COMMENTS : writes_comment
     COMMENTS ||--o{ COMMENTS : replies_to
     USERS ||--o{ REACTIONS : reacts_to
+    POSTS ||--o{ REACTIONS : receives
     USERS ||--o{ BOOKMARKS : bookmarks
-    USERS ||--o{ FOLLOWS : follows
-    USERS ||--o{ POST_EMBEDDINGS : has_embedding
+    POSTS ||--o{ BOOKMARKS : bookmarked_in
+    USERS ||--o{ FOLLOWS : follower
+    USERS ||--o{ FOLLOWS : followee
+    POSTS ||--o{ POST_EMBEDDINGS : has_embedding
     USERS ||--o{ READING_ACTIVITY : activity_log
     POSTS ||--o{ READING_ACTIVITY : activity_log
 ```
----
-
-*No other files were modified.*

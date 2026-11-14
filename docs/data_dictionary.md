@@ -118,6 +118,7 @@ This document records the exact schema of the **Intelligent Community Blogging a
 | **Unique** | `(comment_id, post_id)` |
 | **Foreign Key (composite)** | `FOREIGN KEY (parent_comment_id, post_id) REFERENCES comments(comment_id, post_id)` |
 | **Check** | `CHECK (parent_comment_id <> comment_id)` |
+| `comments_updated_after_created` | `CHECK (updated_at >= created_at)` (C9) |
 
 *Triggers*:
 - `comments_set_updated_at` (BEFORE UPDATE) → function `set_updated_at()`
@@ -183,12 +184,15 @@ This document records the exact schema of the **Intelligent Community Blogging a
 | **Primary Key** | `(post_id, model_name)` |
 
 *Triggers*: none
-*Indexes*: none (PK already indexed)
-*Column*: post_embeddings.embedding is vector(384), NOT NULL.
-*Key*: (post_id, model_name), so one post can have one embedding per model.
-*Index type*: HNSW, with m = 16 and ef_construction = 64.
-*Distance metric*: cosine distance, from the operator class vector_cosine_ops (queries use the <=> operator).
-*Delete rule*: FK to posts is ON DELETE CASCADE.
+*Indexes*:
+- `post_embeddings_embedding_hnsw_idx` (HNSW, `m = 16`, `ef_construction = 64`) on `embedding vector_cosine_ops`, defined in `db/advanced/vector_search.sql`
+
+*Notes*:
+- `embedding` is `vector(384)`, NOT NULL (all-MiniLM-L6-v2 produces 384 numbers).
+- Key `(post_id, model_name)`: one post can have one embedding per model.
+- Distance metric: cosine distance, from the operator class `vector_cosine_ops` (queries use the `<=>` operator).
+- Delete rule: FK to posts is ON DELETE CASCADE, because an embedding has no meaning without its post.
+
 ---
 
 ## Table: `reading_activity`
@@ -210,13 +214,29 @@ This document records the exact schema of the **Intelligent Community Blogging a
 # Views (defined in `db/advanced/views.sql`)
 
 ## `published_posts`
-*Purpose*: expose only posts that are `status = 'published'` and not `removed`.
+*Purpose*: the only posts allowed in feeds, search and recommendations (C7). A post has exactly one status, so `status = 'published'` already excludes drafts, unpublished and removed posts.
 ```sql
-SELECT * FROM posts WHERE status = 'published' AND status <> 'removed' WITH CHECK OPTION;
+CREATE VIEW published_posts AS
+SELECT post_id, author_id, community_id, title, content, status,
+       created_at, updated_at, published_at, search_vector
+FROM posts
+WHERE status = 'published'
+WITH CHECK OPTION;
 ```
+The view is simple (one table, no aggregates), so PostgreSQL lets you UPDATE through it. `WITH CHECK OPTION` rejects any write through the view that would make the row disappear from it (for example setting `status = 'draft'`).
 
 ## `popular_posts`
-*Purpose*: similar to `published_posts` but ordered by a popularity metric (not shown here).
+*Purpose*: one row per published post (built on `published_posts`) with its engagement counts.
+
+| Column | Meaning |
+|---|---|
+| `post_id`, `title`, `author_name`, `community_name`, `published_at` | Post details, joined from `users` and `communities` |
+| `like_count`, `love_count`, `insightful_count` | Reactions of each type (`count(*) FILTER (WHERE …)`) |
+| `reaction_count` | All reactions |
+| `comment_count` | Comments with `status = 'visible'` only |
+| `popularity_score` | `reaction_count + comment_count` |
+
+Reactions and comments are each counted in their own derived table (`GROUP BY post_id`) **before** the join. Joining both tables directly would multiply rows (5 reactions × 4 comments = 20 rows per post) and inflate both counts. The view itself is not ordered; queries add `ORDER BY popularity_score DESC`.
 
 ---
 
