@@ -1,14 +1,18 @@
-import './globals.css';
+import "./globals.css";
+import NavBar from "./NavBar";
 
 export const metadata = {
-  title: 'Online Blogging Platform',
-  description: 'Next.js skeleton for the DBMS project',
+  title: "Community Blog",
+  description: "Community blogging with keyword and semantic search",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <NavBar />
+        {children}
+      </body>
     </html>
   );
 }
