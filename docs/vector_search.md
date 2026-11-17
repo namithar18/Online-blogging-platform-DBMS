@@ -96,6 +96,7 @@ LIMIT $3;
 
 - The *source* post must be visible to the caller (a draft only to its author and admins), otherwise the API answers 404. The *results* are always published posts (C7).
 - If the source post has no embedding yet, the API returns an empty list with status 200.
+
 ## 8. Full-text search versus semantic search
 
 | | Full-text search | Semantic search |
@@ -110,7 +111,15 @@ The platform offers both because they fail in different ways: keywords miss para
 
 ## 9. How to reproduce
 
-Load order: `schema.sql`, `seed.sql`, `triggers.sql`, `views.sql`, `indexes.sql`, `fulltext.sql`, `seed_embeddings.sql`, `vector_search.sql` (see the README).
+Load the files in this order: `db/schema.sql`, `db/seed.sql`, `db/advanced/triggers.sql`, `db/advanced/views.sql`, `db/advanced/indexes.sql`, `db/advanced/fulltext.sql`, `db/seed_embeddings.sql`, then `db/advanced/vector_search.sql`.
+
+macOS / Linux (bash or zsh):
+
+```bash
+docker exec -i blogdb_nextjs psql -U postgres -d blog < db/advanced/vector_search.sql
+```
+
+Windows (PowerShell):
 
 ```powershell
 Get-Content -Raw -Encoding UTF8 db\advanced\vector_search.sql | docker exec -i blogdb_nextjs psql -U postgres -d blog
@@ -120,6 +129,6 @@ The script shows: the 12 embeddings of 384 dimensions, the most similar posts fo
 
 ## 10. Limits and future work
 
-- Only posts are embedded, and only with one model. Long posts are truncated by the model's input limit (MiniLM reads about 256 word pieces), so a long post is represented by its beginning.
+- Only posts are embedded, and only with one model. Long posts are truncated: `@huggingface/transformers` cuts the input at 512 tokens (`model_max_length` in the model's tokenizer config). The model was trained on texts of up to 256 tokens, so a very long post is represented mostly by its beginning.
 - HNSW is approximate, and the build parameters were left at their defaults.
 - A hybrid ranking that combines `ts_rank` and similarity is a possible enhancement.
