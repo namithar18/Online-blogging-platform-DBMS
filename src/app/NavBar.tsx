@@ -53,6 +53,12 @@ export default function NavBar() {
       <strong>Blog</strong>
       <Link href="/">Home</Link>
       <Link href="/search">Search</Link>
+      {user && (
+        <>
+          <Link href="/write">Write</Link>
+          <Link href="/my-posts">My posts</Link>
+        </>
+      )}
       <span style={{ marginLeft: "auto", display: "flex", gap: 12, alignItems: "center" }}>
         {user === undefined ? null : user ? (
           <>

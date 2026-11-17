@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 
 // One post with everything a reader can do on it. Every piece of data comes
@@ -34,6 +34,14 @@ type Comment = {
 type Similar = { postId: string; title: string; authorName: string; similarity: number };
 
 const REACTION_TYPES = ["like", "love", "insightful"] as const;
+
+// The statuses an author may choose (the API rejects anything else;
+// "removed" is set only by admins).
+const STATUS_ACTIONS = [
+  { status: "published", label: "Publish" },
+  { status: "unpublished", label: "Unpublish" },
+  { status: "draft", label: "Move to draft" },
+] as const;
 const DOT = "·";
 
 // GET helper: parsed JSON on success, null on any error status.
@@ -64,6 +72,7 @@ async function send(url: string, method: string, body?: unknown): Promise<string
 
 export default function PostPage() {
   const { id } = useParams<{ id: string }>();
+  const router = useRouter();
 
   const [me, setMe] = useState<Me | null | undefined>(undefined);
   const [post, setPost] = useState<Post | null | undefined>(undefined);
@@ -78,6 +87,15 @@ export default function PostPage() {
   const [replyTo, setReplyTo] = useState<string | null>(null);
   const [replyText, setReplyText] = useState("");
   const viewLogged = useRef(false);
+  const [editing, setEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState("");
+  const [editContent, setEditContent] = useState("");
+  const [editTags, setEditTags] = useState("");
+
+  const loadPost = useCallback(async () => {
+    const data = await getJson<{ post: Post }>(`/api/posts/${id}`);
+    setPost(data?.post ?? null);
+  }, [id]);
 
   const loadReactions = useCallback(async () => {
     setReactions(await getJson<Reactions>(`/api/posts/${id}/reactions`));
@@ -194,6 +212,56 @@ export default function PostPage() {
     }, loadComments);
   }
 
+  // ---- Author: change status, edit, delete -------------------------------
+
+  function changeStatus(status: string) {
+    void act(() => send(`/api/posts/${id}`, "PATCH", { status }), loadPost);
+  }
+
+  function startEdit() {
+    if (!post) return;
+    setEditTitle(post.title);
+    setEditContent(post.content);
+    setEditTags(post.tags.join(", "));
+    setEditing(true);
+  }
+
+  // Tags are replaced as a whole list. Changing the title or content also
+  // re-computes the embedding in the same transaction (see the PATCH route).
+  function saveEdit(e: FormEvent) {
+    e.preventDefault();
+    const tags = editTags
+      .split(",")
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+    void act(async () => {
+      const error = await send(`/api/posts/${id}`, "PATCH", { title: editTitle, content: editContent, tags });
+      if (!error) setEditing(false);
+      return error;
+    }, loadPost);
+  }
+
+  // A real DELETE: ON DELETE CASCADE also deletes the post's comments,
+  // reactions, bookmarks, tags links, views and embedding.
+  async function deletePost() {
+    if (!window.confirm("Delete this post permanently? Its comments and reactions are deleted too.")) return;
+    setBusy(true);
+    setMessage(null);
+    const error = await send(`/api/posts/${id}`, "DELETE");
+    setBusy(false);
+    if (error) {
+      setMessage(error);
+      return;
+    }
+    router.push("/my-posts");
+  }
+
+  // ---- Admin: soft delete (status = 'removed') or restore ----------------
+
+  function moderate(action: "remove" | "restore") {
+    void act(() => send(`/api/admin/posts/${id}`, "PATCH", { action }), loadPost);
+  }
+
   if (post === undefined) {
     return <main style={{ maxWidth: 760, margin: "0 auto", padding: 24 }}>Loading...</main>;
   }
@@ -209,6 +277,7 @@ export default function PostPage() {
 
   const loggedIn = Boolean(me);
   const isAuthor = me?.userId === post.authorId;
+  const isAdmin = me?.role === "ADMIN";
   const countOf = (type: string) => reactions?.counts.find((c) => c.type === type)?.count ?? 0;
 
   return (
@@ -219,17 +288,93 @@ export default function PostPage() {
         </p>
       )}
 
-      <h1 style={{ marginBottom: 4 }}>{post.title}</h1>
-      <p style={{ marginTop: 0 }}>
-        <small>
-          {post.authorName} in {post.communityName}
-          {post.publishedAt ? ` ${DOT} ${new Date(post.publishedAt).toLocaleDateString()}` : ""}
-          {post.tags.length > 0 ? ` ${DOT} ${post.tags.join(", ")}` : ""}
-        </small>
-      </p>
+      {/* Author and admin controls. The buttons are only shortcuts: every
+          action is checked again by the API (author only, admin only). */}
+      {(isAuthor || isAdmin) && !editing && (
+        <section
+          style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", padding: 8, border: "1px solid #8886", borderRadius: 4, marginBottom: 16 }}
+        >
+          <small>
+            Status: <strong>{post.status}</strong>
+          </small>
+          {isAuthor && post.status !== "removed" && (
+            <>
+              {STATUS_ACTIONS.filter((a) => a.status !== post.status).map((a) => (
+                <button key={a.status} onClick={() => changeStatus(a.status)} disabled={busy}>
+                  {a.label}
+                </button>
+              ))}
+              <button onClick={startEdit} disabled={busy}>
+                Edit
+              </button>
+              <button onClick={() => void deletePost()} disabled={busy} style={{ color: "crimson" }}>
+                Delete
+              </button>
+            </>
+          )}
+          {isAuthor && post.status === "removed" && <small>Removed by a moderator: it can no longer be edited.</small>}
+          {isAdmin && post.status !== "removed" && (
+            <button onClick={() => moderate("remove")} disabled={busy} style={{ color: "crimson" }}>
+              Remove (admin)
+            </button>
+          )}
+          {isAdmin && post.status === "removed" && (
+            <button onClick={() => moderate("restore")} disabled={busy}>
+              Restore (admin)
+            </button>
+          )}
+        </section>
+      )}
 
-      {/* Plain text with line breaks kept; never rendered as HTML. */}
-      <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{post.content}</div>
+      {editing ? (
+        <form onSubmit={saveEdit} style={{ display: "grid", gap: 8 }}>
+          <input
+            value={editTitle}
+            onChange={(e) => setEditTitle(e.target.value)}
+            aria-label="Title"
+            maxLength={200}
+            required
+            style={{ padding: 8, fontSize: 20 }}
+          />
+          <textarea
+            value={editContent}
+            onChange={(e) => setEditContent(e.target.value)}
+            aria-label="Content"
+            rows={10}
+            required
+            style={{ padding: 8 }}
+          />
+          <input
+            value={editTags}
+            onChange={(e) => setEditTags(e.target.value)}
+            aria-label="Tags"
+            placeholder="Tags, separated by commas"
+            style={{ padding: 8 }}
+          />
+          <div style={{ display: "flex", gap: 8 }}>
+            <button type="submit" disabled={busy}>
+              {busy ? "Saving..." : "Save"}
+            </button>
+            <button type="button" onClick={() => setEditing(false)} disabled={busy}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      ) : (
+        <>
+          <h1 style={{ marginBottom: 4 }}>{post.title}</h1>
+          <p style={{ marginTop: 0 }}>
+            <small>
+              {post.authorName} in {post.communityName}
+              {post.publishedAt ? ` ${DOT} ${new Date(post.publishedAt).toLocaleDateString()}` : ""}
+              {post.tags.length > 0 ? ` ${DOT} ${post.tags.join(", ")}` : ""}
+            </small>
+          </p>
+
+          {/* Plain text with line breaks kept; never rendered as HTML. */}
+          <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{post.content}</div>
+        </>
+      )}
 
       {message && (
         <p role="alert" style={{ color: "crimson" }}>
@@ -237,7 +382,10 @@ export default function PostPage() {
         </p>
       )}
 
-      {/* Reactions, bookmark and follow */}
+      {/* Reactions, bookmark and follow. Only on published posts: the API
+          refuses them on drafts and removed posts (404, C7), so the
+          author's or an admin's preview shows no buttons. */}
+      {post.status === "published" && (
       <section style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", margin: "24px 0" }}>
         {REACTION_TYPES.map((type) => (
           <button
@@ -270,6 +418,7 @@ export default function PostPage() {
           </small>
         )}
       </section>
+      )}
 
       {/* Similar posts: pgvector cosine similarity on the stored embeddings */}
       {similar.length > 0 && (
